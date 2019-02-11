@@ -40,7 +40,7 @@ class alipay_notify {
 		$prestr = substr($arg,0,count($arg)-2);  //去掉最后一个&号
 		$this->mysign = $this->sign($prestr.$this->security_code);
 		//log_result("notify_url_log:sign=".$_POST["sign"]."&mysign=".$this->mysign."&".$this->charset_decode(implode(",",$_POST),$this->_input_charset ));
-		if (eregi("true$",$veryfy_result) && $this->mysign == $_POST["sign"])  {
+		if (preg_match("true$",$veryfy_result) && $this->mysign == $_POST["sign"])  {
 			return true;
 		} else return false;
 	}
@@ -161,7 +161,7 @@ class alipay_notify {
 }
 
 function  log_result($word) {
-	$fp = fopen("/tmp/alipay_log.txt","a");	
+	$fp = fopen("./alipay_log.txt","a");	
 	flock($fp, LOCK_EX) ;
 	fwrite($fp,$word."：执行日期：".strftime("%Y%m%d%H%I%S",time())."\t\n");
 	flock($fp, LOCK_UN); 
@@ -170,6 +170,11 @@ function  log_result($word) {
 
 $gatewaymodule = "alipay"; # Enter your gateway module name here replacing template
 $GATEWAY = getGatewayVariables($gatewaymodule);
+
+$url			= $GATEWAY['systemurl'];
+$companyname 	= $GATEWAY['companyname'];
+$currency		= $GATEWAY['currency'];
+
 if (!$GATEWAY["type"]) die("Module Not Activated"); # Checks gateway module is active before accepting callback
 
 $_input_charset  = "utf-8";   //字符编码格式 目前支持 GBK 或 utf-8
@@ -185,30 +190,42 @@ if(!$verify_result) {
 } else {
 	# Get Returned Variables
 	$status = $_GET['trade_status'];    //获取支付宝传递过来的交易状态
-	$invoiceid = $_GET['out_trade_no']; //获取支付宝传递过来的订单号
+	$invoiceId = $_GET['out_trade_no']; //获取支付宝传递过来的订单号
+	if ($GATEWAY['multi_site']) {
+		$invoiceId = str_replace($GATEWAY['site_security_code']."-","",$_GET['out_trade_no']);
+	}
 	$transid = $_GET['trade_no'];       //获取支付宝传递过来的交易号
-	$amount = $_GET['total_fee'];       //获取支付宝传递过来的总价格
-	$fee = 0;
+	$paymentAmount = $_GET['total_fee'];       //获取支付宝传递过来的总价格
+	$feeAmount = 0;
 	
 	if($status == 'TRADE_FINISHED' || $status == 'TRADE_SUCCESS') {
-		$invoiceid = checkCbInvoiceID($invoiceid,$GATEWAY["name"]); # Checks invoice ID is a valid invoice number or ends processing
-		//checkCbTransID($transid); # Checks transaction number isn't already in the database and ends processing if it does
+		$invoiceId = checkCbInvoiceID($invoiceId,$GATEWAY["name"]); # Checks invoice ID is a valid invoice number or ends processing
 
-		$table = "tblaccounts";
-		$fields = "transid";
-		$where = array("transid"=>$transid);
-		$result = select_query($table,$fields,$where);
-		$data = mysql_fetch_array($result);
+		//货币转换开始
+		//获取支付货币种类
+		$currencytype 	= \Illuminate\Database\Capsule\Manager::table('tblcurrencies')->where('id', $gatewayParams['convertto'])->first();
+		
+		//获取账单 用户ID
+		$userinfo 	= \Illuminate\Database\Capsule\Manager::table('tblinvoices')->where('id', $invoiceId)->first();
+		
+		//得到用户 货币种类
+		$currency = getCurrency( $userinfo->userid );
+		
+		// 转换货币
+		$paymentAmount = convertCurrency( $paymentAmount, $currencytype->id, $currency['id'] );
+		// 货币转换结束
+
+		checkCbTransID($transid); # Checks transaction number isn't already in the database and ends processing if it does
+
+		$data = \Illuminate\Database\Capsule\Manager::table('tblaccounts')->where('transid', $transid)->first();
 		if(!$data){
-			addInvoicePayment($invoiceid,$transid,$amount,$fee,$gatewaymodule);
+			addInvoicePayment($invoiceId,$transid,$paymentAmount,$feeAmount,$gatewaymodule);
 			logTransaction($GATEWAY["name"],$_GET,"Successful");
 		}
+		//echo "<script>window.parent.location.href='$url/viewinvoice.php?id=$invoiceid';</script>";
 	}
 	
 }
-$url			= $GATEWAY['systemurl'];
-$companyname 	= $GATEWAY['companyname'];
-$currency		= $GATEWAY['currency'];
 ?>
 <!DOCTYPE html> 
 <html> 
@@ -250,7 +267,7 @@ $currency		= $GATEWAY['currency'];
 	<?php if($status == 'TRADE_FINISHED' || $status == 'TRADE_SUCCESS') {?>
 							<h2>您已成功支付 <?php echo $total_fee; ?> CNY </h2>
 	<?php } else {?>
-							<h2>Oops！！！</h2>
+							<h2>奥...好像那里出错了</h2>
 	<?php }?>
 						</div>
 					</div>
@@ -262,7 +279,7 @@ $currency		= $GATEWAY['currency'];
 					<p>交易编号：<span><?php echo $transid ?></span></p>
 					<p>我们会将确认资料发送至您的信箱。</p>
 	<?php } else {?>
-					<p>貌似是什么地方出了一些问题！</p>
+					<p class="text-center">貌似是什么地方出了一些问题！</p>
 	<?php }?>
 					<a href="<?php echo $url ?>/clientarea.php" class="btn btn-lg btn-success btn-block">返回用户中心</a>
 				</div>
